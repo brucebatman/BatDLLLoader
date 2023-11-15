@@ -14,7 +14,8 @@ BatBasic BatDLL BatLoader and BatInjection into a BatProcess.
 
 ### BatBypass
 - The current loader will bypass Defender (11/15/2023)
-- The current loader will probably bypass other EDR like CrowdStrike, Avast. (Will be tester)
+- The current loader will probably bypass other EDR like CrowdStrike, Avast. (Will be tested someday)
+- Remember kids, if you drop your DLL's on disk and they get flagged, you need to obfuscate those too!
 
 ### ProcessInjection
 - LoadLibraryA + VirtualAllocEx + CreateRemoteThread
@@ -33,6 +34,12 @@ You need to specify the PID and the DLL to inject
 C:\Users\admin\Desktop>DLLLoadPID.exe
 Usage: DLLLoadPID.exe <PID> <DLL>
 ```
+
+```
+C:\Users\admin\Desktop>DLLLoadPID.exe
+Usage: DLLLoadPID.exe 3321 batmen.dll
+```
+
 With the proper DLLMain function of your DLL.
 CobaltStrike DLL starts with a **StartW**.
 
