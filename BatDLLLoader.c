@@ -1,6 +1,8 @@
 #include <windows.h>
-#include <stdio.h>
 #include <TlHelp32.h>
+#include <stdio.h>
+#include <wchar.h>
+
 
 /*
 ######     #    ####### ######  #       #       #       #######    #    ######  ####### ######  
@@ -10,91 +12,123 @@
 #     # #######    #    #     # #       #       #       #     # ####### #     # #       #   #   
 #     # #     #    #    #     # #       #       #       #     # #     # #     # #       #    #  
 ######  #     #    #    ######  ####### ####### ####### ####### #     # ######  ####### #     # 
-
+v2.0
 */
 
+BOOL InjectDll(DWORD procID, const char* dllName) {
+    if (procID == 0) {
+        return FALSE;
+    }
 
-int main(int argc, char* argv[])
-{
-    if (argc != 3)
-    {
-        printf("Usage: %s <PID> <DLL>\n", argv[0]);
+    HANDLE hProc = OpenProcess(PROCESS_ALL_ACCESS, FALSE, procID);
+    if (hProc == NULL) {
+        wprintf(L"Error opening process. Error code: %lu\n", GetLastError());
+        return FALSE;
+    }
+
+    WCHAR fullDllName[MAX_PATH];
+    GetFullPathNameW(dllName, MAX_PATH, fullDllName, NULL);
+    wprintf(L"[+] Acquired full DLL path: %s\n", fullDllName);
+
+    LPVOID remoteString = VirtualAllocEx(hProc, NULL, wcslen(fullDllName) * sizeof(WCHAR) + sizeof(WCHAR), MEM_COMMIT, PAGE_READWRITE);
+    if (remoteString == NULL) {
+        wprintf(L"Error allocating memory in the remote process. Error code: %lu\n", GetLastError());
+        CloseHandle(hProc);
+        return FALSE;
+    }
+
+    if (!WriteProcessMemory(hProc, remoteString, fullDllName, wcslen(fullDllName) * sizeof(WCHAR) + sizeof(WCHAR), NULL)) {
+        wprintf(L"Error writing to the remote process. Error code: %lu\n", GetLastError());
+        VirtualFreeEx(hProc, remoteString, 0, MEM_RELEASE);
+        CloseHandle(hProc);
+        return FALSE;
+    }
+
+    HMODULE kernel32 = GetModuleHandle(L"kernel32.dll");
+    if (kernel32 == NULL) {
+        wprintf(L"Error getting handle to kernel32.dll. Error code: %lu\n", GetLastError());
+        VirtualFreeEx(hProc, remoteString, 0, MEM_RELEASE);
+        CloseHandle(hProc);
+        return FALSE;
+    }
+
+    LPVOID loadLibrary = (LPVOID)GetProcAddress(kernel32, "LoadLibraryW");
+    if (loadLibrary == NULL) {
+        wprintf(L"Error getting address of LoadLibraryW. Error code: %lu\n", GetLastError());
+        VirtualFreeEx(hProc, remoteString, 0, MEM_RELEASE);
+        CloseHandle(hProc);
+        return FALSE;
+    }
+
+    HANDLE hThread = CreateRemoteThread(hProc, NULL, 0, (LPTHREAD_START_ROUTINE)loadLibrary, remoteString, 0, NULL);
+    if (hThread == NULL) {
+        wprintf(L"Error creating remote thread. Error code: %lu\n", GetLastError());
+        VirtualFreeEx(hProc, remoteString, 0, MEM_RELEASE);
+        CloseHandle(hProc);
+        return FALSE;
+    }
+
+    WaitForSingleObject(hThread, INFINITE);
+
+    CloseHandle(hThread);
+    VirtualFreeEx(hProc, remoteString, 0, MEM_RELEASE);
+    CloseHandle(hProc);
+
+    return TRUE;
+}
+
+DWORD GetProcIDByPartialName(const wchar_t* partialName) {
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) {
+        wprintf(L"Error creating process snapshot. Error code: %lu\n", GetLastError());
+        return 0;
+    }
+
+    PROCESSENTRY32 procEntry;
+    ZeroMemory(&procEntry, sizeof(PROCESSENTRY32));
+    procEntry.dwSize = sizeof(PROCESSENTRY32);
+
+    if (!Process32First(hSnap, &procEntry)) {
+        wprintf(L"Error getting process snapshot. Error code: %lu\n", GetLastError());
+        CloseHandle(hSnap);
+        return 0;
+    }
+
+    do {
+        if (wcsstr(procEntry.szExeFile, partialName) != NULL) {
+            CloseHandle(hSnap);
+            return procEntry.th32ProcessID;
+        }
+    } while (Process32Next(hSnap, &procEntry));
+
+    CloseHandle(hSnap);
+    return 0;
+}
+
+int wmain(int argc, wchar_t** argv) {
+    if (argc < 3) {
+        wprintf(L"Sample Usage:\n");
+        wprintf(L"%s <name of process> <path of dll to load>\n", argv[0]);
+        return 0;
+    }
+
+    const wchar_t* processName = argv[1];
+    const wchar_t* dllName = argv[2];
+    DWORD procID = GetProcIDByPartialName(processName);
+
+    if (procID == 0) {
+        wprintf(L"Could not find process %s\n", processName);
         return 1;
     }
 
-    DWORD pid = atoi(argv[1]);
-    LPVOID dll = LoadLibraryA(argv[2]);
-    if (dll == NULL)
-    {
-        DWORD error = GetLastError();
-        printf("Error loading DLL: %s\n", argv[2]);
-        printf("Error code: %d\n", error);
-        return 1;
+    wprintf(L"[+] Got process ID for %s PID: %lu\n", processName, procID);
+
+    if (InjectDll(procID, dllName)) {
+        wprintf(L"DLL now injected!\n");
     }
-
-    HANDLE process = OpenProcess(PROCESS_ALL_ACCESS, FALSE, pid);
-    if (process == NULL)
-    {
-        DWORD error = GetLastError();
-        printf("Error opening process: %d\n", pid);
-        printf("Error code: %d\n", error);
-        return 1;
+    else {
+        wprintf(L"DLL couldn't be injected\n");
     }
-
-    LPVOID remote_dll = VirtualAllocEx(process, NULL, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if (remote_dll == NULL)
-    {
-        DWORD error = GetLastError();
-        printf("Error allocating memory in remote process: %d\n", pid);
-        printf("Error code: %d\n", error);
-        return 1;
-    }
-
-    BOOL success = WriteProcessMemory(process, remote_dll, dll, 4096, NULL);
-    if (!success)
-    {
-        DWORD error = GetLastError();
-        printf("Error writing DLL to remote process: %d\n", pid);
-        printf("Error code: %d\n", error);
-        return 1;
-    }
-
-    HANDLE thread = CreateRemoteThread(process, NULL, 0, (LPTHREAD_START_ROUTINE)LoadLibraryA, (LPVOID)remote_dll, 0, NULL);
-    if (thread == NULL)
-    {
-        DWORD error = GetLastError();
-        printf("Error creating remote thread: %d\n", pid);
-        printf("Error code: %d\n", error);
-        return 1;
-    }
-
-    WaitForSingleObject(thread, INFINITE);
-
-    CloseHandle(thread);
-    CloseHandle(process);
-
-    // Get the DLL's entry point.
-    FARPROC entry_point = GetProcAddress(dll, "StartW");
-    if (entry_point == NULL)
-    {
-        DWORD error = GetLastError();
-        printf("Error getting DLL entry point: %s\n", argv[2]);
-        printf("Error code: %d\n", error);
-        return 1;
-    }
-
-    // Call the DLL's entry point.
-    BOOL result = (*entry_point)(NULL, DLL_PROCESS_ATTACH, NULL);
-    if (!result)
-    {
-        DWORD error = GetLastError();
-        printf("Error calling DLL entry point: %s\n", argv[2]);
-        printf("Error code: %d\n", error);
-        return 1;
-    }
-
-    // Free the DLL.
-    FreeLibrary(dll);
 
     return 0;
 }
